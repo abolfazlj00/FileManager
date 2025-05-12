@@ -1,0 +1,31 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{% block title %}File Manager{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav style="background: #333; color: white; padding: 10px;">
+    <span><strong>📁 File Manager</strong></span>
+    <span style="float: right;">
+      {% if request.user.is_authenticated %}
+        {{ request.user.email }} |
+        <a href="{% url 'logout' %}" style="color: white;">Logout</a>
+      {% else %}
+        <a href="{% url 'login' %}" style="color: white;">Login</a> |
+        <a href="{% url 'register' %}" style="color: white;">Register</a>
+      {% endif %}
+    </span>
+  </nav>
+
+  <div style="padding: 20px;">
+    {% block content %}{% endblock %}
+  </div>
+
+  {% block script %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="container">
+  <h2>📁 File Manager</h2>
+  <button onclick="goBack()" id="back-button">⬅️ Back</button>
+  <p id="current-folder-label">
+    <em>root</em>
+  </p>
+
+  
+  <button onclick="createSubFolder(); event.stopPropagation();">📁+</button>
+  <button onclick="uploadFileTo(); event.stopPropagation();">📤</button>
+
+
+  <h3>Folders</h3>
+  <ul id="folder-list"></ul>
+
+  <h3>Files</h3>
+  <input type="file" id="file-upload" style="display:none" onchange="handleFileUpload(event)" />
+  <ul id="file-list"></ul>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+let currentFolder = null;
+let allFolders = [];
+let allFiles = [];
+
+function getCSRFToken() {
+  const name = 'csrftoken';
+  const cookies = document.cookie.split(';');
+  for (let i = 0; i < cookies.length; i++) {
+    const cookie = cookies[i].trim();
+    if (cookie.startsWith(name + '=')) {
+      return decodeURIComponent(cookie.substring(name.length + 1));
+    }
+  }
+}
+
+function loadEverything() {
+  Promise.all([
+    fetch('/api/storage/folders/').then(res => res.json()),
+    fetch('/api/storage/files/').then(res => res.json())
+  ]).then(([folders, files]) => {
+    allFolders = folders;
+    allFiles = files;
+    renderView();
+  });
+}
+
+function renderView() {
+  if (currentFolder){
+    document.getElementById("back-button").style.display = "block"
+  } else {
+    document.getElementById("back-button").style.display = "none"
+  }
+  const folderListEl = document.getElementById('folder-list');
+  const fileListEl = document.getElementById('file-list');
+  folderListEl.innerHTML = '';
+  fileListEl.innerHTML = '';
+
+  const currentFolders = allFolders.filter(f => f.parent === currentFolder);
+  const currentFiles = allFiles.filter(f => f.folder === currentFolder);
+
+  currentFolders.forEach(folder => {
+    const subfolderCount = allFolders.filter(f => f.parent === folder.id).length;
+    const fileCount = allFiles.filter(f => f.folder === folder.id).length;
+
+    const li = document.createElement('li');
+    li.innerHTML = `
+      📁 <strong>${folder.title}</strong>
+      <small>(${subfolderCount} folders, ${fileCount} files)</small>
+      <button onclick="renameFolder(${folder.id}); event.stopPropagation();">✏️</button>
+      <button onclick="deleteFolder(${folder.id}); event.stopPropagation();">🗑️</button>
+    `;
+    li.style.cursor = "pointer"
+    li.onclick = () => enterFolder(folder.id);
+    folderListEl.appendChild(li);
+  });
+
+  currentFiles.forEach(file => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <img src="api/storage/thumbnails/${file.slug}" width="50" style="margin-right:10px;" />
+      <a href="api/storage/files/${file.slug}" target="_blank">${file.title}</a>
+      <button onclick="renameFile(${file.id}); event.stopPropagation();">✏️</button>
+      <button onclick="deleteFile(${file.id}); event.stopPropagation();">🗑️</button>
+      <button onclick="showFileInfo(${file.id}); event.stopPropagation();">ℹ️</button>
+    `;
+    fileListEl.appendChild(li);
+  });
+
+  updateFolderPath();
+}
+
+function enterFolder(folderId) {
+  currentFolder = folderId;
+  renderView();
+}
+
+function goBack() {
+  const current = allFolders.find(f => f.id === currentFolder);
+  currentFolder = current?.parent || null;
+  renderView();
+}
+
+function updateFolderPath() {
+  const label = document.getElementById('current-folder-label');
+  if (!currentFolder) {
+    label.innerHTML = `<strong>📂 <span style="cursor:pointer" onclick="enterFolder(null)">root</span></strong>`;
+    return;
+  }
+
+  const pathArray = getFolderPath(currentFolder);
+  const html = pathArray.map(f => `<span style="cursor:pointer;" onclick="enterFolder(${f.id})">${f.title}</span>`).join(' / ');
+  label.innerHTML = `<strong>📂 <span style="cursor:pointer" onclick="enterFolder(null)">root</span> / ${html}</strong>`;
+}
+
+
+function renameFolder(id) {
+  const name = prompt("New folder name:");
+  if (!name) return;
+  fetch(`/api/storage/folders/${id}/rename/`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCSRFToken()
+    },
+    body: JSON.stringify({ title: name }),
+    credentials: 'include'
+  }).then((resp) => {
+    if (resp.status === 200) {
+      const folder = allFolders.find(f => f.id === id);
+      if (folder) {
+        folder.title = name;
+        renderView();
+      }
+    } else {
+      // can alert or something else
+    }
+  });
+}
+
+function deleteFolder(id) {
+  if (!confirm("Delete folder?")) return;
+  fetch(`/api/storage/folders/${id}/`, {
+    method: 'DELETE',
+    headers: { 'X-CSRFToken': getCSRFToken() },
+    credentials: 'include'
+  }).then(() => loadEverything());
+}
+
+function createSubFolder() {
+  const name = prompt("Subfolder name:");
+  if (!name) return;
+  fetch('/api/storage/folders/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCSRFToken()
+    },
+    body: JSON.stringify({ title: name, parent: currentFolder }),
+    credentials: 'include'
+  }).then(() => loadEverything());
+}
+
+let uploadTargetFolder = null;
+function uploadFileTo() {
+  uploadTargetFolder = currentFolder;
+  document.getElementById('file-upload').click();
+}
+
+function handleFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file || !validateUpload(file)) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('title', file.name);
+  if (uploadTargetFolder) formData.append('folder', uploadTargetFolder);
+
+  fetch('/api/storage/files/', {
+    method: 'POST',
+    body: formData,
+    headers: {
+      'X-CSRFToken': getCSRFToken()
+    },
+    credentials: 'include'
+  }).then(() => {
+    event.target.value = '';
+    loadEverything();
+  });
+}
+
+function renameFile(id) {
+  const name = prompt("New file name:");
+  if (!name) return;
+  fetch(`/api/storage/files/${id}/rename/`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCSRFToken()
+    },
+    body: JSON.stringify({ title: name }),
+    credentials: 'include'
+  }).then((resp) => {
+    if (resp.status === 200) {
+      const file = allFiles.find(f => f.id === id);
+      if (file) {
+        file.title = name;
+        renderView();
+      }
+    } else {
+      // can alert or something else
+    }
+  });
+}
+
+function deleteFile(id) {
+  if (!confirm("Delete file?")) return;
+  fetch(`/api/storage/files/${id}/`, {
+    method: 'DELETE',
+    headers: { 'X-CSRFToken': getCSRFToken() },
+    credentials: 'include'
+  }).then(() => loadEverything());
+}
+
+function showFileInfo(id) {
+  const file = allFiles.find(f => f.id === id);
+  alert(`Name: ${file.title}\nSize: ${Math.round(file.size / 1024)} KB\nType: ${file.file_type}\nUploaded: ${file.created_at}`);
+}
+
+function getFolderPath(folderId) {
+  const path = [];
+  let current = allFolders.find(f => f.id === folderId);
+  while (current) {
+    path.unshift(current);
+    current = current.parent ? allFolders.find(f => f.id === current.parent) : null;
+  }
+  return path;
+}
+
+function validateUpload(file) {
+  if (!uploadRules) return true; // fallback
+
+  const typeGroup = file.type.startsWith('image/') ? 'Image' :
+                    file.type.startsWith('video/') ? 'Video' : null;
+
+  if (!typeGroup || !uploadRules[typeGroup]) {
+    alert("Unsupported file type.");
+    return false;
+  }
+
+  if (!uploadRules[typeGroup].mime_types.includes(file.type)) {
+    alert(`File type ${file.type} is not allowed.`);
+    return false;
+  }
+
+  if (file.size > uploadRules[typeGroup].max_size) {
+    alert(`File is too large. Max size is ${uploadRules[typeGroup].max_size / 1024 / 1024} MB.`);
+    return false;
+  }
+
+  return true;
+}
+
+let uploadRules = null;
+
+function loadUploadRules() {
+  fetch('/api/storage/upload-permission/')
+    .then(res => res.json())
+    .then(data => {
+      uploadRules = data;
+    });
+}
+
+window.onload = () => {
+  loadEverything();
+  loadUploadRules();
+};
+</script>
+{% endblock %}
